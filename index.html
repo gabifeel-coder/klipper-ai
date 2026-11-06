@@ -179,7 +179,7 @@ details summary{cursor:pointer;font-weight:700}
       </div>
       <div class="grid paygrid" id="paygrid"></div>
       <section class="live" aria-label="Търсене в интернет">
-        <div class="sect-h"><h2 style="font-size:16px">Търси в интернет сега</h2><span>нови обяви от последния месец</span></div>
+        <div class="sect-h"><h2 style="font-size:16px">Търси в интернет сега</h2><span>нови обяви със сума, от Bluesky и Reddit</span></div>
         <div class="row"><div class="field" style="flex:1;min-width:200px"><input type="text" id="liveq" value="paying clippers campaign" aria-label="Какво да търся"></div><button class="go" id="livego" style="margin-left:0">Търси</button></div>
         <div class="row" id="livelinks"></div>
         <div id="liveres" class="liveres"></div>
@@ -945,32 +945,29 @@ function ago(sec){ const d = Math.floor((Date.now()/1000 - sec)/86400); return d
 async function liveSearch(){
   const q = $('liveq').value.trim() || 'paying clippers campaign'; liveLinks(q);
   const out = $('liveres'); out.innerHTML = '<p class="lede" style="margin:0">Търся…</p>';
-  const terms = q.split(/\s+/).filter(Boolean);
-  const urls = [
-    'https://www.reddit.com/search.json?sort=new&t=month&limit=50&raw_json=1&q=' + encodeURIComponent(q),
-    'https://www.reddit.com/search.json?sort=new&t=month&limit=50&raw_json=1&q=' + encodeURIComponent('clipping campaign CPM'),
-  ];
-  let posts = [], ok = false;
-  for (const u of urls) {
-    try { const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 9000);
-      const r = await fetch(u, { signal: ctl.signal }); clearTimeout(tm); if (!r.ok) continue; const j = await r.json(); ok = true;
-      for (const c of (j.data && j.data.children) || []) { const d = c.data; if (!d || d.removed_by_category || d.title === '[deleted]') continue; posts.push(d); }
-    } catch (e) { /* blocked or offline */ }
-  }
-  if (!ok) { out.innerHTML = ''; const p = document.createElement('p'); p.className = 'note'; p.textContent = 'Живото търсене не стигна до интернет оттук. Натисни някой от бутоните по-горе: те отварят търсенето направо в Google, X, Reddit или TikTok.'; out.append(p); return; }
-  const seen = new Set(); posts = posts.filter(d => !seen.has(d.id) && seen.add(d.id))
-    .map(d => ({ d, rel: (PAYWORDS.test(d.title + ' ' + (d.selftext||'').slice(0,600)) ? 2 : 0) + terms.filter(t => (d.title + ' ' + (d.selftext||'')).toLowerCase().includes(t.toLowerCase())).length }))
-    .filter(x => x.rel >= 2).sort((a,b) => b.d.created_utc - a.d.created_utc).slice(0, 25);
+  const MONEY = /(\$|€|£)\s?\d[\d.,]*\s?(k|m)?(\s?(\/|per|a|за)\s?(1\s?k|1,?000|k|thousand|million|1m|view|views))?|\bcpm\b|\brpm\b/i;
+  const CLIPWORD = /(clip|clipping|clipper|views|campaign|creator|ugc|shorts|tiktok|reels|кампани|клип)/i;
+  const get = async (u) => { try { const ctl = new AbortController(); const tm = setTimeout(() => ctl.abort(), 9000); const r = await fetch(u, { signal: ctl.signal }); clearTimeout(tm); return r.ok ? await r.json() : null; } catch { return null; } };
+  const items = []; let reached = false;
+  const bq = [q, '"per 1k views"', '"per 1000 views"', '"clipping campaign"', '"paid campaign" creators', 'clippers CPM'];
+  const bs = await Promise.all(bq.map(x => get('https://api.bsky.app/xrpc/app.bsky.feed.searchPosts?limit=40&sort=latest&q=' + encodeURIComponent(x))));
+  for (const j of bs) { if (!j) continue; reached = true;
+    for (const p of j.posts || []) { const t = (p.record && p.record.text) || ''; const rkey = (p.uri || '').split('/').pop();
+      items.push({ id:'b'+p.uri, text:t, when: Date.parse(p.indexedAt || p.record.createdAt)/1000, where:'Bluesky · @' + p.author.handle, url:'https://bsky.app/profile/' + p.author.handle + '/post/' + rkey }); } }
+  const rd = await get('https://www.reddit.com/search.json?sort=new&t=month&limit=50&raw_json=1&q=' + encodeURIComponent(q));
+  if (rd) { reached = true; for (const c of (rd.data && rd.data.children) || []) { const d = c.data; if (!d || d.removed_by_category) continue; items.push({ id:'r'+d.id, text: d.title + '\n' + (d.selftext||'').slice(0,500), when:d.created_utc, where:'Reddit · r/' + d.subreddit, url:'https://www.reddit.com' + d.permalink }); } }
+  if (!reached) { out.innerHTML = ''; const p = document.createElement('p'); p.className = 'note'; p.textContent = 'Живото търсене не стигна до интернет оттук. Натисни някой от бутоните по-горе: те отварят търсенето направо в Google, X, Reddit или TikTok.'; out.append(p); return; }
+  const seen = new Set(), monthAgo = Date.now()/1000 - 45*86400;
+  const list = items.filter(x => !seen.has(x.id) && seen.add(x.id) && x.when > monthAgo && MONEY.test(x.text) && CLIPWORD.test(x.text)).sort((a,b) => b.when - a.when).slice(0, 30);
   out.innerHTML = '';
-  if (!posts.length) { const p = document.createElement('p'); p.className = 'lede'; p.style.margin = '0'; p.textContent = 'Няма нови обяви за това търсене. Опитай с други думи, например „clipping campaign CPM“ или името на стриймър.'; out.append(p); return; }
-  for (const { d } of posts) {
-    const a = document.createElement('a'); a.className = 'lr'; a.href = 'https://www.reddit.com' + d.permalink; a.target = '_blank'; a.rel = 'noopener';
-    const b = document.createElement('b'); b.textContent = d.title; const sp = document.createElement('span');
-    const money = ((d.title + ' ' + (d.selftext||'')).match(/\$\s?\d[\d.,]*\s?(?:\/|per)?\s?(?:1k|1,?000|k|m|million)?/i) || [])[0];
-    sp.textContent = 'r/' + d.subreddit + ' · ' + ago(d.created_utc) + (money ? ' · ' + money.trim() : '') + ' · ' + (d.num_comments||0) + ' коментара';
-    a.append(b, sp); out.append(a);
+  if (!list.length) { const p = document.createElement('p'); p.className = 'lede'; p.style.margin = '0'; p.textContent = 'Няма нови обяви със сума за това търсене. Опитай с други думи или с бутоните по-горе.'; out.append(p); return; }
+  for (const x of list) {
+    const a = document.createElement('a'); a.className = 'lr'; a.href = x.url; a.target = '_blank'; a.rel = 'noopener';
+    const b = document.createElement('b'); b.textContent = x.text.replace(/\s+/g,' ').slice(0, 220) + (x.text.length > 220 ? '…' : '');
+    const sp = document.createElement('span'); const money = (x.text.match(MONEY) || [])[0];
+    sp.textContent = x.where + ' · ' + ago(x.when) + (money ? ' · ' + money.trim() : ''); a.append(b, sp); out.append(a);
   }
-  const n = document.createElement('p'); n.className = 'lede'; n.style.cssText = 'margin:0;font-size:12px'; n.textContent = 'Обявите са от Reddit и не са проверени. Ползвай правилата отдолу, преди да се включиш.'; out.append(n);
+  const n = document.createElement('p'); n.className = 'lede'; n.style.cssText = 'margin:0;font-size:12px'; n.textContent = 'Обявите са от социалните мрежи и не са проверени. Ползвай правилата отдолу, преди да се включиш.'; out.append(n);
 }
 $('livego').onclick = liveSearch; $('liveq').addEventListener('keydown', e => { if (e.key === 'Enter') liveSearch(); });
 liveLinks($('liveq').value);
